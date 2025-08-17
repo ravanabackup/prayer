@@ -1,13 +1,12 @@
 {
-  "name": "Candle — RSS PWA",
-  "short_name": "Candle",
-  "start_url": "/",
+  "name": "YouTube Feeds PWA",
+  "short_name": "YT Feeds",
+  "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#071022",
-  "theme_color": "#0b3a66",
+  "background_color": "#111",
+  "theme_color": "#111",
   "icons": [
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
-  ],
-  "description": "Realtime RSS PWA with background audio and notifications"
+    { "src": "icon.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
 }

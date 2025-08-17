@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Candle — PWA RSS Player</title>
+
+  <!-- Link to manifest -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#0b3a66" />
+
+  <style>
+    :root{
+      --bg:#071022; --card:#0e2a47; --muted:#98a8c7; --accent:#ffd166;
+      color-scheme: dark;
+    }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{background:linear-gradient(180deg,var(--bg),#041029);color:#e9f0ff;padding:16px;}
+    .app{max-width:900px;margin:0 auto;}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between}
+    h1{margin:0;font-size:20px}
+    .controls{display:flex;gap:8px;align-items:center}
+    button{background:var(--accent);border:0;padding:8px 12px;border-radius:10px;font-weight:600;cursor:pointer}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02)); padding:12px;border-radius:12px;margin-top:14px;box-shadow:0 6px 18px rgba(2,8,23,0.6)}
+    ul.feed{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+    li.post{padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);display:flex;justify-content:space-between;align-items:center}
+    .meta{color:var(--muted);font-size:13px}
+    .player{display:flex;gap:8px;align-items:center}
+    .small{font-size:13px;color:var(--muted)}
+    .install-btn{background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px;border-radius:8px}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Candle — Prayer RSS</h1>
+        <div class="small">Realtime PWA with background audio & notifications</div>
+      </div>
+      <div class="controls">
+        <button id="btnRefresh">Refresh</button>
+        <button id="btnNotify">Enable Notifications</button>
+        <button id="btnSubscribe" class="hidden">Subscribe Push</button>
+        <button id="btnInstall" class="install-btn hidden">Install</button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>Feed</strong>
+        <div class="small" id="lastUpdate">Last update: —</div>
+      </div>
+      <ul id="feedList" class="feed"></ul>
+    </section>
+
+    <section class="card" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <strong>Audio Player</strong>
+        <div class="small">Works in background on supported browsers</div>
+      </div>
+
+      <div style="margin-top:10px;display:flex;gap:12px;align-items:center">
+        <div class="player">
+          <button id="playBtn">Play</button>
+          <button id="pauseBtn" class="hidden">Pause</button>
+        </div>
+        <div style="flex:1">
+          <input id="audioUrl" placeholder="Audio URL (mp3/ogg) — paste here" style="width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)" />
+        </div>
+      </div>
+
+      <div style="margin-top:10px">
+        <audio id="audio" preload="metadata" controls class="hidden"></audio>
+      </div>
+    </section>
+
+    <footer style="margin-top:14px;color:var(--muted);font-size:13px">PWA demo — offline caching, notifications & push scaffolded.</footer>
+  </div>
+
+<script>
+/* ===== CONFIG ===== */
+const FEED_URL = 'https://ravanabackup.github.io/candle/rss'; // your feed url
+const POLL_INTERVAL_MS = 45_000; // poll every 45s while app open
+
+/* ===== BOOT ===== */
+const feedList = document.getElementById('feedList');
+const lastUpdateEl = document.getElementById('lastUpdate');
+const btnRefresh = document.getElementById('btnRefresh');
+const btnNotify = document.getElementById('btnNotify');
+const btnSubscribe = document.getElementById('btnSubscribe');
+const btnInstall = document.getElementById('btnInstall');
+
+let knownGuids = new Set();
+let deferredPrompt = null;
+
+/* ===== Install prompt handling ===== */
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  btnInstall.classList.remove('hidden');
+});
+btnInstall.addEventListener('click', async () => {
+  if(!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const choice = await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  btnInstall.classList.add('hidden');
+});
+
+/* ===== Fetch & parse simple RSS (XML) ===== */
+async function fetchFeed() {
+  try {
+    const res = await fetch(FEED_URL, {cache: "no-store"});
+    const text = await res.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, "application/xml");
+
+    // try common rss structures
+    const items = Array.from(doc.querySelectorAll("item, entry"));
+    const posts = items.map(i => {
+      const title = (i.querySelector("title") || {textContent:''}).textContent.trim();
+      const link = (i.querySelector("link") || {textContent:''}).textContent.trim() ||
+                   (i.querySelector("link[href]") && i.querySelector("link[href]").getAttribute('href')) || '';
+      const guidEl = i.querySelector("guid") || i.querySelector("id");
+      const guid = (guidEl && guidEl.textContent.trim()) || link || title;
+      const pub = (i.querySelector("pubDate") || i.querySelector("published") || {textContent:''}).textContent.trim();
+      const descr = (i.querySelector("description") || i.querySelector("summary") || {textContent:''}).textContent.trim();
+      return {title, link, guid, pub, descr};
+    });
+
+    return posts;
+  } catch(err){
+    console.error("Failed to fetch feed", err);
+    return [];
+  }
+}
+
+function renderPosts(posts){
+  feedList.innerHTML = '';
+  posts.forEach(p => {
+    const li = document.createElement('li');
+    li.className = 'post';
+    const left = document.createElement('div');
+    left.innerHTML = `<div><strong>${escapeHtml(p.title)}</strong></div><div class="meta">${p.pub || ''}</div>`;
+    const right = document.createElement('div');
+    right.innerHTML = `<a href="${escapeAttr(p.link || '#')}" target="_blank" rel="noopener" class="small">Open</a>`;
+    li.append(left,right);
+    feedList.append(li);
+  });
+  lastUpdateEl.textContent = 'Last update: ' + (new Date()).toLocaleString();
+}
+
+/* ===== Simple new-item detection & notification ===== */
+async function checkForUpdates(announce=true){
+  const posts = await fetchFeed();
+  if(!posts.length) { renderPosts([]); return posts; }
+
+  // detect new guids
+  const newly = [];
+  posts.forEach(p => {
+    if(!knownGuids.has(p.guid)){
+      newly.push(p);
+      knownGuids.add(p.guid);
+    }
+  });
+
+  // render all posts
+  renderPosts(posts);
+
+  // announce new
+  if(announce && newly.length){
+    newly.slice(0,3).forEach(p => {
+      showNotification(`New: ${p.title}`, {
+        body: p.pub || '',
+        data: {url: p.link}
+      });
+    });
+  }
+  return posts;
+}
+
+/* ===== Notification helpers ===== */
+async function requestNotifyPermission(){
+  const res = await Notification.requestPermission();
+  return res === 'granted';
+}
+btnNotify.addEventListener('click', async () => {
+  const ok = await requestNotifyPermission();
+  btnNotify.textContent = ok ? 'Notifications Enabled' : 'Enable Notifications';
+  if(ok) btnNotify.disabled = true;
+});
+
+function showNotification(title, opts = {}){
+  // Window notifications when in focus fallback
+  if(Notification.permission !== 'granted'){
+    console.log('Notification permission not granted');
+    return;
+  }
+
+  // If Service Worker ready, show via SW for better behavior
+  if(navigator.serviceWorker && navigator.serviceWorker.controller){
+    navigator.serviceWorker.ready.then(reg => {
+      try {
+        reg.showNotification(title, Object.assign({
+          icon: '/icons/icon-192.png',
+          badge: '/icons/icon-96.png',
+        }, opts));
+      } catch(e){
+        // fallback to window
+        new Notification(title, opts);
+      }
+    });
+  } else {
+    new Notification(title, opts);
+  }
+}
+
+/* ===== Notification click handling via service worker messages ===== */
+navigator.serviceWorker?.addEventListener('message', e => {
+  console.log('SW message', e.data);
+});
+
+/* ===== Push subscription (client scaffold) ===== */
+const VAPID_PUBLIC_KEY = 'YOUR_PUBLIC_VAPID_KEY'; // <-- replace with your public VAPID key (base64url)
+
+btnSubscribe.addEventListener('click', async () => {
+  if(!('serviceWorker' in navigator)) return alert('ServiceWorker unsupported');
+  if(Notification.permission !== 'granted') {
+    const ok = await requestNotifyPermission();
+    if(!ok) return alert('Notifications permission required for push subscription');
+  }
+
+  const reg = await navigator.serviceWorker.ready;
+  try{
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+    });
+    // send sub to your server for storing
+    console.log('Push subscription', sub);
+    alert('Push subscribed on client. Send subscription object to your push server (see README).');
+  }catch(err){
+    console.error('Push subscription failed', err);
+    alert('Push subscription failed: ' + err);
+  }
+});
+
+/* ===== Utility: base64url -> Uint8Array ===== */
+function urlBase64ToUint8Array(base64String) {
+  if(!base64String) return null;
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+/* ===== Initial population of knownGuids to avoid notifying old posts on first load ===== */
+(async function init(){
+  // register service worker
+  if('serviceWorker' in navigator){
+    try{
+      await navigator.serviceWorker.register('/service-worker.js');
+      console.log('SW registered');
+      // show subscribe button only if push supported
+      const reg = await navigator.serviceWorker.ready;
+      if('pushManager' in reg) btnSubscribe.classList.remove('hidden');
+    }catch(e){console.warn('SW register failed', e);}
+  }
+
+  // initial fetch
+  const posts = await checkForUpdates(false);
+  // mark them as seen
+  posts.forEach(p => knownGuids.add(p.guid));
+
+  // poll while app open
+  setInterval(() => checkForUpdates(true), POLL_INTERVAL_MS);
+
+  // refresh button
+  btnRefresh.addEventListener('click', () => checkForUpdates(true));
+
+  // show notification button state
+  if(Notification.permission === 'granted'){ btnNotify.textContent = 'Notifications Enabled'; btnNotify.disabled = true; }
+})();
+
+/* ===== Simple HTML escaping helpers ===== */
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
+
+/* ===== BACKGROUND AUDIO PLAYER (Media Session) ===== */
+const audio = document.getElementById('audio');
+const playBtn = document.getElementById('playBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const audioUrl = document.getElementById('audioUrl');
+
+playBtn.addEventListener('click', async () => {
+  const src = audioUrl.value.trim();
+  if(!src) return alert('Paste an audio URL (mp3/ogg) to play.');
+  if(audio.src !== src) audio.src = src;
+  try {
+    await audio.play();
+  } catch(e){
+    console.error('Play failed', e);
+    alert('Playback failed: user gesture may be required or URL invalid.');
+  }
+});
+
+pauseBtn.addEventListener('click', () => {
+  audio.pause();
+});
+
+audio.addEventListener('play', () => {
+  playBtn.classList.add('hidden');
+  pauseBtn.classList.remove('hidden');
+  // Media Session metadata
+  if('mediaSession' in navigator){
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'Candle audio',
+      artist: 'Candle',
+      album: '',
+      artwork: [{src:'/icons/icon-192.png', sizes:'192x192', type:'image/png'}]
+    });
+    navigator.mediaSession.setActionHandler('play', async () => { await audio.play(); });
+    navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); });
+  }
+});
+
+audio.addEventListener('pause', () => {
+  playBtn.classList.remove('hidden');
+  pauseBtn.classList.add('hidden');
+});
+
+/* Keep playing if page is hidden (browsers permit background audio if initiated by user) */
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'hidden'){
+    console.log('page hidden — audio may continue playing depending on browser');
+  }
+});
+
+/* ===== Handle notification click (to open link) ===== */
+navigator.serviceWorker?.addEventListener('message', e => {
+  /* optional SW messages */
+});
+
+/* ===== Helper: show notification when clicking feed items (example) ===== */
+feedList.addEventListener('click', (ev) => {
+  const a = ev.target.closest('a');
+  if(a) {
+    // open link in new tab, and optionally focus existing window
+  }
+});
+</script>
+</body>
+</html>
